@@ -1,0 +1,48 @@
+Status
+~~~~~~
+
+This script is just a rough draft.  Use at your own risk!  Remember to backup
+profile directory before first run.  Later I'll rewrite it to better quality,
+although I'm using the script on two machines with success. :-)
+
+Any bug reports, patches, remarks are welcome!
+
+
+Overview
+~~~~~~~~
+
+firefox_tmpfs at first run moves your (let reference your user name as $USER)
+profile directory (let reference to it as $PROFILE) to the one suffixed with
+".nv" (only if $PROFILE.nv doesn't already exist), mounts tmpfs on profile
+directory and copies (rsyncs) all files from "$PROFILE" to "$PROFILE.nv".  On
+next run when tmpfs is already mounted there, firefox_tmpfs syncs back changes
+from $PROFILE on tmpfs to $PROFILE.nv which should reside on regular FS.
+Sync-back operation is atomic thanks to atomic-rsync Perl script which is
+expected to reside in /usr/share/rsync/atomic-rsync.
+
+
+Installation
+~~~~~~~~~~~~
+
+Add following line to /etc/fstab.  Let assume $USER is user's name and $UID is
+user's id.
+
+  firefox_$USER  /home/$USER/.mozilla/firefox/$PROFILE  tmpfs  noauto,noatime,user,exec,uid=$UID,size=256m  0 0
+
+Put firefox_tmpfs script somewhere in the $PATH which is also accessible for
+cron.  Add following line to user's crontab (crontab -e).
+
+  */10  *  *  *  *  firefox_tmpfs -s $PROFILE
+
+It will sync back profile from "$PROFILE" to "$PROFILE.nv".  Next, add
+following command to some DE autostart or .xsession (which is my case):
+
+  firefox_tmpfs -b -n $PROFILE
+
+It will backup $PROFILE.nv, and notify you when tmpfs dir is ready for use.
+Don't run Firefox before it's ready!
+
+rsync write log to $HOME/.firefox_tmpfs.log.  That should be all.  Have fun.
+
+
+ - aidecoe

@@ -1,0 +1,138 @@
+#!/bin/bash
+
+# firefox_tmpfs - store Firefox profile on tmpfs and sync-back
+# Copyright (C) 2011  Amadeusz Żołnowski <aidecoe@aidecoe.name>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+while (($# > 1)); do
+    case $1 in
+        -n) notify=yes ;;
+        -b) do_backup=yes ;;
+        -s) sync_back=yes ;;
+    esac
+    shift
+done
+
+
+profile="$1"
+lock_file="$HOME/.firefox_tmpfs-${profile}.lock"
+
+[[ -x /usr/share/rsync/atomic-rsync ]] || {
+    echo "/usr/share/rsync/atomic-rsync is required!"
+    exit 1
+}
+hash -p /usr/share/rsync/atomic-rsync atomic-rsync
+
+
+unlock() {
+    rm "$1"
+}
+
+lock() {
+    local f="$1" first
+
+    [[ -e $f ]] && {
+        echo "Already running."
+        return 1
+    }
+
+    echo "$$" >> "$f" || return 1
+    sleep 0.5
+    read first < "$f" || return 1
+
+    [[ $$ = ${first} ]] || {
+        echo "Already running."
+        return 1
+    }
+}
+
+is_empty() {
+    local f
+
+    for f in "$1"/*; do
+        [[ -e $f ]] && return 1
+    done
+
+    return 0
+}
+
+notify() {
+    [[ ${notify} != yes ]] && return 0
+
+    notify-send -u "$1" firefox_tmpfs "$2"
+}
+
+backup() {
+    local i dest
+    local base="$1.bak"
+
+    for i in {0..3}; do
+        [[ ! -e $base$i ]] && dest="$base$i" && break
+    done
+
+    [[ $dest ]] || dest="${base}0"
+    rm -rf "$dest"
+    cp -a "$1" "$dest"
+}
+
+
+cd "${HOME}/.mozilla/firefox" || exit 1
+
+[[ -e ${profile} ]] || {
+    echo 'Wrong usage!' >&2
+    notify critical 'Wrong usage!'
+    exit 1
+}
+
+lock "${lock_file}"
+trap "unlock '${lock_file}'" EXIT
+
+if [[ ! -e ${profile}.nv ]]; then
+    mv "${profile}" "${profile}.nv"
+    mkdir "${profile}"
+fi
+
+chmod 0700 "${profile}" "${profile}.nv"
+
+[[ ${do_backup} ]] && backup "${profile}.nv"
+
+if mountpoint -q "./${profile}"; then
+    [[ $sync_back ]] || {
+        echo "${profile} is already on tmpfs.  Run with -s to sync back."
+        exit 1
+    }
+    is_empty && {
+        echo "${profile} is empty!"
+        notify critical  "${profile} is empty!"
+        exit 1
+    }
+    atomic-rsync -a --delete --log-file="${HOME}/.firefox_tmpfs.log" \
+        "./${profile}/" "./${profile}.nv/"
+else
+    [[ ! $sync_back ]] || {
+        echo "tmpfs is not mounted for ${profile}, yet.  Run without -s."
+        exit 1
+    }
+    mount "./${profile}" || {
+        echo "Couldn't mount ${profile}!"
+        notify critical  "Couldn't mount ${profile}!"
+        exit 1
+    }
+    rsync -a --log-file="${HOME}/.firefox_tmpfs.log" \
+        "./${profile}.nv/" "./${profile}/"
+fi
+
+notify normal 'DONE'
