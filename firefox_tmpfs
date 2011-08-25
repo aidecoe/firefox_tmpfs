@@ -114,6 +114,9 @@ cleanup() {
     fi
 
     notify normal "Clean. Bye."
+
+    # What if we do not reach this line?
+    rm "$lock_file"
 }
 
 is_tmpfs_dir_ok() {
