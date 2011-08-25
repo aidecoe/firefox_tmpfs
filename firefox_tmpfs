@@ -105,15 +105,13 @@ cleanup() {
 
     notify normal "Cleaning up..."
 
-    { flock 9
-        sync_back_to_nv
+    sync_back_to_nv
 
-        if ! umount "./$profile"; then
-            echo "Couldn't umount ${profile}! (Quiting.)"
-            notify critical  "Couldn't umount ${profile}! (Quiting.)"
-            return 1
-        fi
-    } 9>"$lock_file"
+    if ! umount "./$profile"; then
+        echo "Couldn't umount ${profile}! (Quiting.)"
+        notify critical  "Couldn't umount ${profile}! (Quiting.)"
+        return 1
+    fi
 
     notify normal "Clean. Bye."
 }
