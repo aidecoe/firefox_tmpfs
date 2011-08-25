@@ -21,10 +21,12 @@ while (($# > 1)); do
     case $1 in
         -n) notify=yes ;;
         -b) do_backup=yes ;;
-        -s) sync_back=yes ;;
+        -i) interval=$2; shift ;;
     esac
     shift
 done
+
+[[ $interval ]] || interval=10
 
 
 profile="$1"
@@ -35,29 +37,8 @@ lock_file="$HOME/.firefox_tmpfs-${profile}.lock"
     exit 1
 }
 hash -p /usr/share/rsync/atomic-rsync atomic-rsync
+type -P atomic-rsync lsof flock notify-send >/dev/null || exit 1
 
-
-unlock() {
-    rm "$1"
-}
-
-lock() {
-    local f="$1" first
-
-    [[ -e $f ]] && {
-        echo "Already running."
-        return 1
-    }
-
-    echo "$$" >> "$f" || return 1
-    sleep 0.5
-    read first < "$f" || return 1
-
-    [[ $$ = ${first} ]] || {
-        echo "Already running."
-        return 1
-    }
-}
 
 is_empty() {
     local f
@@ -70,7 +51,7 @@ is_empty() {
 }
 
 notify() {
-    [[ ${notify} != yes ]] && return 0
+    [[ $notify != yes ]] && return 0
 
     notify-send -u "$1" firefox_tmpfs "$2"
 }
@@ -88,51 +69,100 @@ backup() {
     cp -a "$1" "$dest"
 }
 
+init() {
+    if [[ ! -e ${profile}.nv ]]; then
+        mv "$profile" "${profile}.nv"
+        mkdir "$profile"
+    fi
+
+    chmod 0700 "$profile" "${profile}.nv"
+
+    [[ $do_backup ]] && backup "${profile}.nv"
+
+    if ! mount "./$profile"; then
+        echo "Couldn't mount ${profile}! (Quiting.)"
+        notify critical  "Couldn't mount ${profile}! (Quiting.)"
+        return 1
+    fi
+    
+    if ! rsync -a --log-file="${HOME}/.firefox_tmpfs.log" \
+        "./${profile}.nv/" "./${profile}/"
+    then
+        echo "Error when syncing ${profile}! (Quiting.)"
+        notify critical "Error when syncing ${profile}! (Quiting.)"
+        return 1
+    fi
+
+    return 0
+}
+
+cleanup() {
+    while [[ "$(lsof ./$profile)" ]]; do
+        echo "ERROR"
+        notify critical "ERROR"
+        sleep 30
+    done
+
+    notify normal "Cleaning up..."
+
+    { flock 9
+        sync_back_to_nv
+
+        if ! umount "./$profile"; then
+            echo "Couldn't umount ${profile}! (Quiting.)"
+            notify critical  "Couldn't umount ${profile}! (Quiting.)"
+            return 1
+        fi
+    } 9>"$lock_file"
+
+    notify normal "Clean. Bye."
+}
+
+is_tmpfs_dir_ok() {
+    if ! mountpoint -q "./$profile"; then
+        echo "$profile is not mounted! (Quiting.)"
+        notify critical "$profile is not mounted! (Quiting.)"
+        return 1
+    fi
+
+    if is_empty; then
+        echo "$profile is empty! (Quiting.)"
+        notify critical "$profile is empty! (Quiting.)"
+        return 1
+    fi
+}
+
+sync_back_to_nv() {
+    is_tmpfs_dir_ok || return 1
+
+    if ! atomic-rsync -a --delete --log-file="${HOME}/.firefox_tmpfs.log" \
+        "./${profile}/" "./${profile}.nv/"
+    then
+        notify critical "Error when syncing ${profile}! (But continuing.)"
+    fi
+
+    is_tmpfs_dir_ok || return 1
+}
+
 
 cd "${HOME}/.mozilla/firefox" || exit 1
 
-[[ -e ${profile} ]] || {
+[[ -e $profile ]] || {
     echo 'Wrong usage!' >&2
     notify critical 'Wrong usage!'
     exit 1
 }
 
-lock "${lock_file}"
-trap "unlock '${lock_file}'" EXIT
+{
+    flock -n 9 || { echo "Already running."; exit 1; }
 
-if [[ ! -e ${profile}.nv ]]; then
-    mv "${profile}" "${profile}.nv"
-    mkdir "${profile}"
-fi
+    trap cleanup EXIT
+    init
 
-chmod 0700 "${profile}" "${profile}.nv"
+    notify normal 'Ready.'
 
-[[ ${do_backup} ]] && backup "${profile}.nv"
-
-if mountpoint -q "./${profile}"; then
-    [[ $sync_back ]] || {
-        echo "${profile} is already on tmpfs.  Run with -s to sync back."
-        exit 1
-    }
-    is_empty && {
-        echo "${profile} is empty!"
-        notify critical  "${profile} is empty!"
-        exit 1
-    }
-    atomic-rsync -a --delete --log-file="${HOME}/.firefox_tmpfs.log" \
-        "./${profile}/" "./${profile}.nv/"
-else
-    [[ ! $sync_back ]] || {
-        echo "tmpfs is not mounted for ${profile}, yet.  Run without -s."
-        exit 1
-    }
-    mount "./${profile}" || {
-        echo "Couldn't mount ${profile}!"
-        notify critical  "Couldn't mount ${profile}!"
-        exit 1
-    }
-    rsync -a --log-file="${HOME}/.firefox_tmpfs.log" \
-        "./${profile}.nv/" "./${profile}/"
-fi
-
-notify normal 'DONE'
+    while true; do
+        sleep ${interval}m
+        sync_back_to_nv || exit 1
+    done
+} 9>"$lock_file"
