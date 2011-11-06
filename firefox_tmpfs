@@ -57,11 +57,13 @@ notify() {
 }
 
 backup() {
-    local i dest
+    local i dest ts min_ts=$(( $(date +'%s') + 3600 ))
     local base="$1.bak"
 
     for i in {0..3}; do
         [[ ! -e $base$i ]] && dest="$base$i" && break
+        ts=$(stat -c '%Y' "$base$i")
+        (( $ts < $min_ts )) && min_ts=$ts && dest="$base$i"
     done
 
     [[ $dest ]] || dest="${base}0"
